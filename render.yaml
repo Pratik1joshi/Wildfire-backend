@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: livefire-api
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn prediction_api:app -k uvicorn.workers.UvicornWorker
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.10.0
+      - key: DATABASE_URL
+        sync: false

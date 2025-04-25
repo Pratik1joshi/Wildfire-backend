@@ -1,1 +1,1 @@
-web: sh start.sh
+web: gunicorn prediction_api:app -k uvicorn.workers.UvicornWorker

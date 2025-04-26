@@ -39,13 +39,14 @@ app = FastAPI(title="LiveFire Prediction API",
               description="API for accessing wildfire predictions and user management",
               version="1.0.0")
 
-# Add CORS middleware
+# Add CORS middleware with specific origin
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Frontend URL
+    allow_origins=["https://wildfire-frontend-mp31-657qrmi5e-pratik-joshis-projects.vercel.app"],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "Accept"],
+    expose_headers=["Content-Type", "Authorization"],
 )
 
 # Database connection

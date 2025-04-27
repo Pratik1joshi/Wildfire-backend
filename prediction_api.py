@@ -42,7 +42,10 @@ app = FastAPI(title="LiveFire Prediction API",
 # Add CORS middleware with specific origin
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://wildfire-frontend-mp31-657qrmi5e-pratik-joshis-projects.vercel.app"],
+    allow_origins=[
+        "https://wildfire-frontend-mp31-657qrmi5e-pratik-joshis-projects.vercel.app",
+        "http://localhost:3000"  # Add this for local development
+    ],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization", "Accept"],
@@ -58,7 +61,11 @@ DATABASE_URL = os.getenv(
 # For asyncpg, the ssl parameter should be simply True or an SSL context
 ENGINE = create_async_engine(
     DATABASE_URL,
-    connect_args={"ssl": True}  # This is the simplified format that works with asyncpg
+    connect_args={"ssl": True},
+    pool_size=5,  # Add connection pool settings
+    max_overflow=10,
+    pool_timeout=30,
+    pool_recycle=1800
 )
 
 async_session = sessionmaker(

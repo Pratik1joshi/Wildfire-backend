@@ -20,6 +20,7 @@ import tempfile
 import io
 from dotenv import load_dotenv
 import uvicorn
+import asyncio
 
 load_dotenv()
 
@@ -1219,11 +1220,17 @@ async def init_admin_user():
 async def startup_event():
     """Initialize database and admin user on startup"""
     try:
+        logger.info("Starting application initialization...")
+        # Add a small delay to ensure logs are flushed
+        await asyncio.sleep(1)
+        
         await init_db()
         await init_admin_user()
         logger.info("Application initialized successfully")
     except Exception as e:
         logger.error(f"Error during application startup: {e}")
+        # Continue running even if initialization fails
+        logger.info("Application will continue running despite initialization errors")
 
 # -------------------- Run Server --------------------
 

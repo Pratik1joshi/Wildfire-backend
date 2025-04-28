@@ -188,6 +188,14 @@ def generate_token():
     return secrets.token_hex(32)
 
 # -------------------- Authentication Routes --------------------
+@app.get("/", include_in_schema=False)
+async def root():
+    """Root endpoint for health checks"""
+    try:
+        return {"status": "API is running", "version": "1.0.0"}
+    except Exception as e:
+        logger.error(f"Error in root endpoint: {e}")
+        return {"status": "error", "message": str(e)}
 
 @app.post("/auth/signup", response_model=Token)
 async def signup(user: UserCreate):
@@ -1179,24 +1187,35 @@ async def init_db():
     )
     """
     
-    # Add indices for commonly queried columns
-    create_indices = """
-    CREATE INDEX IF NOT EXISTS idx_finalpred_date ON finalpredictions (prediction_date);
-    CREATE INDEX IF NOT EXISTS idx_finalpred_category ON finalpredictions (fire_category);
-    CREATE INDEX IF NOT EXISTS idx_finalpred_district ON finalpredictions (district);
-    CREATE INDEX IF NOT EXISTS idx_finalpred_prob ON finalpredictions (fire_prob);
-    """
+    # Create each index separately
+    idx_date = "CREATE INDEX IF NOT EXISTS idx_finalpred_date ON finalpredictions (prediction_date)"
+    idx_category = "CREATE INDEX IF NOT EXISTS idx_finalpred_category ON finalpredictions (fire_category)"
+    idx_district = "CREATE INDEX IF NOT EXISTS idx_finalpred_district ON finalpredictions (district)"
+    idx_prob = "CREATE INDEX IF NOT EXISTS idx_finalpred_prob ON finalpredictions (fire_prob)"
     
     try:
-        async with async_session() as session, session.begin():
-            await session.execute(text(users_table))
-            await session.execute(text(alerts_table))
-            await session.execute(text(predictions_table))
-            await session.execute(text(create_indices))
-            logger.info("Database tables initialized")
+        async with async_session() as session:
+            async with session.begin():
+                await session.execute(text(users_table))
+                await session.execute(text(alerts_table))
+                await session.execute(text(predictions_table))
+            
+            # Execute each index creation in its own transaction
+            async with session.begin():
+                await session.execute(text(idx_date))
+            
+            async with session.begin():
+                await session.execute(text(idx_category))
+                
+            async with session.begin():
+                await session.execute(text(idx_district))
+                
+            async with session.begin():
+                await session.execute(text(idx_prob))
+                
+            logger.info("Database tables and indices initialized")
     except Exception as e:
         logger.error(f"Error initializing database: {e}")
-
 
 async def table_exists(table_name: str) -> bool:
     """Check if a table exists in the database"""
@@ -1220,17 +1239,19 @@ async def init_admin_user():
         SELECT id FROM users WHERE email = :email
         """)
         
+        admin_exists = False
         async with async_session() as session:
             result = await session.execute(admin_query, {"email": "admin@example.com"})
-            admin_exists = result.fetchone()
+            admin_exists = result.scalar() is not None
+        
+        # Create admin in a separate session if it doesn't exist
+        if not admin_exists:
+            create_admin_query = text("""
+            INSERT INTO users (email, full_name, hashed_password, role, created_at)
+            VALUES (:email, :full_name, :hashed_password, 'admin', NOW())
+            """)
             
-            if not admin_exists:
-                # Create admin user
-                create_admin_query = text("""
-                INSERT INTO users (email, full_name, hashed_password, role, created_at)
-                VALUES (:email, :full_name, :hashed_password, 'admin', NOW())
-                """)
-                
+            async with async_session() as session:
                 async with session.begin():
                     await session.execute(
                         create_admin_query, 
@@ -1247,8 +1268,12 @@ async def init_admin_user():
 @app.on_event("startup")
 async def startup_event():
     """Initialize database and admin user on startup"""
-    await init_db()
-    await init_admin_user()
+    try:
+        await init_db()
+        await init_admin_user()
+        logger.info("Application initialized successfully")
+    except Exception as e:
+        logger.error(f"Error during application startup: {e}")
 
 # -------------------- Run Server --------------------
 

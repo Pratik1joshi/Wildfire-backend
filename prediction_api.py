@@ -43,7 +43,7 @@ app = FastAPI(title="LiveFire Prediction API",
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:3000", "https://wildfire-frontend-mp31-gw8o5s7lm-pratik-joshis-projects.vercel.app"  # Add this for local development
+        "http://localhost:3000", "https://wildfire-frontend-mp31-pr5f9a2ig-pratik-joshis-projects.vercel.app"  # Add this for local development
     ],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],

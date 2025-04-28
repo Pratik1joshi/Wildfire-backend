@@ -49,7 +49,7 @@ app.add_middleware(
     ],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["Content-Type", "Authorization", "Accept", "Content-Disposition"],
+    allow_headers=["*"],
     expose_headers=["Content-Type", "Authorization"],
 )
 
@@ -65,8 +65,9 @@ ENGINE = create_async_engine(
     connect_args={"ssl": True},
     pool_size=5,  # Add connection pool settings
     max_overflow=10,
-    pool_timeout=30,
-    pool_recycle=1800
+    pool_timeout=60,
+    pool_recycle=1800,
+    pool_pre_ping=True
 )
 
 async_session = sessionmaker(

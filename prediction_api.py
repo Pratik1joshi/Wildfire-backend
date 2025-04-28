@@ -45,8 +45,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "https://wildfire-frontend-mp31.vercel.app", 
-        "https://wildfire-frontend-mp31-pr5f9a2ig-pratik-joshis-projects.vercel.app",
-        "https://wildfire-frontend-mp31-gw8o5s7lm-pratik-joshis-projects.vercel.app"  # Add this new URL
+        "https://wildfire-frontend-mp31-pr5f9a2ig-pratik-joshis-projects.vercel.app" # Add this new URL
     ],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],

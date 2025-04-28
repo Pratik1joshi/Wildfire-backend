@@ -49,7 +49,7 @@ app.add_middleware(
     ],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["Content-Type", "Authorization", "Accept"],
+    allow_headers=["Content-Type", "Authorization", "Accept", "Content-Disposition"],
     expose_headers=["Content-Type", "Authorization"],
 )
 
@@ -585,116 +585,63 @@ async def upload_predictions_csv(
     overwrite: bool = Form(False)
 ):
     try:
-        # First, check if the finalpredictions table exists
-        if not await table_exists("finalpredictions"):
-            # Table doesn't exist, create it
-            predictions_table = """
-            CREATE TABLE IF NOT EXISTS finalpredictions (
-                id SERIAL PRIMARY KEY,
-                latitude FLOAT NOT NULL,
-                longitude FLOAT NOT NULL,
-                prediction_date DATE NOT NULL,
-                valid_time TIMESTAMP,
-                fire_prob FLOAT NOT NULL,
-                prediction_class INTEGER,
-                fire_category VARCHAR(50),
-                gapa_napa VARCHAR(255),
-                district VARCHAR(255),
-                pr_name VARCHAR(255),
-                province FLOAT
-            )
-            """
-            async with async_session() as session, session.begin():
-                await session.execute(text(predictions_table))
-                logger.info("Created finalpredictions table")
-        
         # Check if file is CSV
         if not file.filename.endswith('.csv'):
             raise HTTPException(status_code=400, detail="File must be a CSV")
         
-        # Read CSV content
-        contents = await file.read()
-        
-        # Parse CSV
+        # Save the uploaded file to a temporary file
+        temp_file_path = None
         try:
-            df = pd.read_csv(io.StringIO(contents.decode('utf-8')))
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Error parsing CSV: {str(e)}")
-        
-        # Validate required columns
-        required_columns = ['latitude', 'longitude', 'prediction_date', 'valid_time', 'fire_prob', 'prediction_class']
-        missing_columns = [col for col in required_columns if col not in df.columns]
-        
-        if missing_columns:
-            raise HTTPException(
-                status_code=400,
-                detail=f"CSV is missing required columns: {', '.join(missing_columns)}"
-            )
-        
-        # Ensure prediction_date is in correct format (YYYY-MM-DD)
-        try:
-            df['prediction_date'] = pd.to_datetime(df['prediction_date']).dt.strftime('%Y-%m-%d')
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Error processing prediction_date: {str(e)}")
-        
-        # Ensure valid_time is in correct datetime format
-        try:
-            df['valid_time'] = pd.to_datetime(df['valid_time'])
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Error processing valid_time: {str(e)}")
-        
-        # Add fire_category if not present
-        if 'fire_category' not in df.columns:
-            df['fire_category'] = df['fire_prob'].apply(lambda p: 
-                'high' if p > 0.99 else 
-                'medium' if p > 0.94 else 
-                'low' if p > 0.8 else 
-                'minimal'
-            )
-        
-        # Standardize column names to lowercase
-        column_mapping = {}
-        for col in df.columns:
-            if col in ["GaPa_NaPa", "DISTRICT", "PR_NAME", "PROVINCE"]:
-                lowercase_col = col.lower()
-                column_mapping[col] = lowercase_col
-        
-        # Apply column renaming if needed
-        if column_mapping:
-            df = df.rename(columns=column_mapping)
-        
-        # Add optional columns if not present
-        optional_columns = ['gapa_napa', 'district', 'pr_name', 'province']
-        for col in optional_columns:
-            if col not in df.columns:
-                df[col] = None
-        
-        # Check if any predictions already exist
-        unique_dates = df['prediction_date'].unique()
-        
-        # Convert string dates to actual date objects for PostgreSQL
-        date_objects = []
-        for date_str in unique_dates:
-            # Create Python date objects from strings
-            if re.match(r'^\d{4}-\d{2}-\d{2}$', date_str):
-                year, month, day = map(int, date_str.split('-'))
-                date_obj = date(year, month, day)
-                date_objects.append(date_obj)
-            else:
-                logger.warning(f"Invalid date format: {date_str}")
-        
-        # Open a new session for checking existing dates
-        async with async_session() as session:
+            # Create a temporary file
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.csv') as temp_file:
+                temp_file_path = temp_file.name
+                
+                # Copy content in chunks to avoid memory issues
+                CHUNK_SIZE = 1024 * 1024  # 1MB chunks
+                while content := await file.read(CHUNK_SIZE):
+                    temp_file.write(content)
+            
+            # Process the CSV with pandas using chunking
+            chunk_size = 1000  # Process 1000 rows at a time
+            
+            # First pass: validate and get unique dates
+            date_objects = set()
+            reader = pd.read_csv(temp_file_path, chunksize=chunk_size)
+            
+            # Validate columns in first chunk
+            first_chunk = next(reader)
+            required_columns = ['latitude', 'longitude', 'prediction_date', 'valid_time', 'fire_prob', 'prediction_class']
+            missing_columns = [col for col in required_columns if col not in first_chunk.columns]
+            
+            if missing_columns:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"CSV is missing required columns: {', '.join(missing_columns)}"
+                )
+            
+            # Process first chunk for dates
+            for date_str in pd.to_datetime(first_chunk['prediction_date']).dt.strftime('%Y-%m-%d').unique():
+                if re.match(r'^\d{4}-\d{2}-\d{2}$', date_str):
+                    year, month, day = map(int, date_str.split('-'))
+                    date_objects.add(date(year, month, day))
+            
+            # Process remaining chunks for dates
+            for chunk in reader:
+                for date_str in pd.to_datetime(chunk['prediction_date']).dt.strftime('%Y-%m-%d').unique():
+                    if re.match(r'^\d{4}-\d{2}-\d{2}$', date_str):
+                        year, month, day = map(int, date_str.split('-'))
+                        date_objects.add(date(year, month, day))
+            
+            # Convert set to list for SQL
+            date_objects = list(date_objects)
+            
             # Check for existing dates
             existing_dates = []
-            if len(date_objects) == 1:
-                check_query = text("SELECT DISTINCT prediction_date::text FROM finalpredictions WHERE prediction_date = :date")
-                result = await session.execute(check_query, {"date": date_objects[0]})
-                existing_dates = [row[0] for row in result]
-            elif len(date_objects) > 1:
-                check_query = text("SELECT DISTINCT prediction_date::text FROM finalpredictions WHERE prediction_date = ANY(:dates)")
-                result = await session.execute(check_query, {"dates": date_objects})
-                existing_dates = [row[0] for row in result]
+            async with async_session() as session:
+                if date_objects:
+                    check_query = text("SELECT DISTINCT prediction_date::text FROM finalpredictions WHERE prediction_date = ANY(:dates)")
+                    result = await session.execute(check_query, {"dates": date_objects})
+                    existing_dates = [row[0] for row in result]
             
             if existing_dates and not overwrite:
                 return {
@@ -702,84 +649,87 @@ async def upload_predictions_csv(
                     "existing_dates": existing_dates,
                     "status": "conflict"
                 }
-        
-        # Open a new session for deleting existing records if needed
-        if existing_dates and overwrite:
-            async with async_session() as session, session.begin():
-                if len(existing_dates) == 1:
-                    delete_query = text("DELETE FROM finalpredictions WHERE prediction_date = :date")
-                    await session.execute(delete_query, {"date": date_objects[0]})
-                else:
+            
+            # Delete existing records if needed
+            if existing_dates and overwrite:
+                async with async_session() as session, session.begin():
                     delete_query = text("DELETE FROM finalpredictions WHERE prediction_date = ANY(:dates)")
                     await session.execute(delete_query, {"dates": date_objects})
-                logger.info(f"Deleted existing predictions for dates: {existing_dates}")
-        
-        # Open a new session for the column check
-        async with async_session() as session:
-            # Get the actual column names from the database table
-            inspect_query = text("""
-            SELECT column_name 
-            FROM information_schema.columns
-            WHERE table_name='finalpredictions'
-            ORDER BY ordinal_position
-            """)
+                    logger.info(f"Deleted existing predictions for dates: {existing_dates}")
             
-            result = await session.execute(inspect_query)
-            db_columns = [row[0] for row in result]
+            # Process the CSV in chunks for insertion
+            reader = pd.read_csv(temp_file_path, chunksize=chunk_size)
+            inserted_count = 0
             
-        logger.info(f"Database columns: {db_columns}")
-        logger.info(f"DataFrame columns: {df.columns.tolist()}")
-        
-        # Keep only columns that exist in the database table
-        columns_to_keep = [col for col in df.columns if col.lower() in [c.lower() for c in db_columns]]
-        df_clean = df[columns_to_keep]
-        
-        # Insert rows in batches with a separate transaction
-        inserted_count = 0
-        batch_size = 100  # Process records in batches of 100
-        total_rows = len(df_clean)
-        
-        for i in range(0, total_rows, batch_size):
-            batch_df = df_clean.iloc[i:i+batch_size]
-            
-            # Open a new session for each batch insertion
-            async with async_session() as session, session.begin():
-                for _, row in batch_df.iterrows():
-                    # Convert date and timestamp strings to objects
-                    date_str = row['prediction_date']
-                    if isinstance(date_str, str) and re.match(r'^\d{4}-\d{2}-\d{2}$', date_str):
-                        year, month, day = map(int, date_str.split('-'))
-                        row['prediction_date'] = date(year, month, day)
-                    
-                    # Create INSERT statement
-                    cols = ', '.join(columns_to_keep)
-                    placeholders = ', '.join(f':{col}' for col in columns_to_keep)
-                    insert_query = f"""
-                    INSERT INTO finalpredictions ({cols})
-                    VALUES ({placeholders})
-                    """
-                    
-                    # Create parameters dict for this row
-                    params = {col: row[col] for col in columns_to_keep}
-                    
-                    try:
-                        # Execute insert with proper parameter typing
-                        await session.execute(text(insert_query), params)
-                        inserted_count += 1
-                    except Exception as row_error:
-                        logger.error(f"Error inserting row {inserted_count}: {str(row_error)}")
-                        # Continue with next row
-                        continue
+            for chunk_df in reader:
+                # Basic preprocessing
+                chunk_df['prediction_date'] = pd.to_datetime(chunk_df['prediction_date']).dt.strftime('%Y-%m-%d')
                 
-                logger.info(f"Inserted batch {i//batch_size + 1}, rows {i+1} to {min(i+batch_size, total_rows)}")
-        
-        # Return summary
-        return {
-            "message": "Predictions successfully uploaded",
-            "rows_processed": inserted_count,
-            "dates_processed": [d.strftime('%Y-%m-%d') for d in date_objects],
-            "status": "success"
-        }
+                # Add fire_category if not present
+                if 'fire_category' not in chunk_df.columns:
+                    chunk_df['fire_category'] = chunk_df['fire_prob'].apply(lambda p: 
+                        'high' if p > 0.99 else 
+                        'medium' if p > 0.94 else 
+                        'low' if p > 0.8 else 
+                        'minimal'
+                    )
+                
+                # Add optional columns if not present
+                for col in ['gapa_napa', 'district', 'pr_name', 'province']:
+                    if col not in chunk_df.columns:
+                        chunk_df[col] = None
+                
+                # Process each row
+                async with async_session() as session, session.begin():
+                    for _, row in chunk_df.iterrows():
+                        # Convert date string to date object
+                        date_str = row['prediction_date']
+                        if isinstance(date_str, str) and re.match(r'^\d{4}-\d{2}-\d{2}$', date_str):
+                            year, month, day = map(int, date_str.split('-'))
+                            row['prediction_date'] = date(year, month, day)
+                        
+                        # Insert the row
+                        insert_query = text("""
+                        INSERT INTO finalpredictions 
+                        (latitude, longitude, prediction_date, valid_time, fire_prob, 
+                         prediction_class, fire_category, gapa_napa, district, pr_name, province)
+                        VALUES 
+                        (:latitude, :longitude, :prediction_date, :valid_time, :fire_prob,
+                         :prediction_class, :fire_category, :gapa_napa, :district, :pr_name, :province)
+                        """)
+                        
+                        await session.execute(
+                            insert_query,
+                            {
+                                "latitude": float(row['latitude']),
+                                "longitude": float(row['longitude']),
+                                "prediction_date": row['prediction_date'],
+                                "valid_time": pd.to_datetime(row['valid_time']) if pd.notna(row['valid_time']) else None,
+                                "fire_prob": float(row['fire_prob']),
+                                "prediction_class": int(row['prediction_class']) if pd.notna(row['prediction_class']) else None,
+                                "fire_category": row['fire_category'],
+                                "gapa_napa": row['gapa_napa'] if pd.notna(row['gapa_napa']) else None,
+                                "district": row['district'] if pd.notna(row['district']) else None,
+                                "pr_name": row['pr_name'] if pd.notna(row['pr_name']) else None,
+                                "province": float(row['province']) if pd.notna(row['province']) else None
+                            }
+                        )
+                        inserted_count += 1
+                
+                logger.info(f"Inserted {inserted_count} rows so far")
+            
+            # Return summary
+            return {
+                "message": "Predictions successfully uploaded",
+                "rows_processed": inserted_count,
+                "dates_processed": [d.strftime('%Y-%m-%d') for d in date_objects],
+                "status": "success"
+            }
+            
+        finally:
+            # Clean up the temporary file
+            if temp_file_path and os.path.exists(temp_file_path):
+                os.unlink(temp_file_path)
     
     except HTTPException:
         raise
@@ -788,7 +738,6 @@ async def upload_predictions_csv(
         import traceback
         logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Failed to process CSV: {str(e)}")
-
 # -------------------- User Management Routes --------------------
 
 @app.get("/admin/users", response_model=List[User])

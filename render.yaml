@@ -3,9 +3,7 @@ services:
     name: livefire-api
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn prediction_api:app -k uvicorn.workers.UvicornWorker --timeout 120
+    startCommand: gunicorn prediction_api:app --workers 4 --worker-class uvicorn.workers.UvicornWorker --timeout 120 --max-requests 1000 --max-requests-jitter 100
     envVars:
       - key: PYTHON_VERSION
-        value: 3.10.0
-      - key: DATABASE_URL
-        sync: false
+        value: 3.9.0
